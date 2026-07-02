@@ -341,7 +341,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
     return { scale, ox: (cw - vw * scale) / 2, oy: (ch - vh * scale) / 2 };
   }
 
-  function beep(freq, dur, gap) {
+  function beep(freq, dur, gap, volume = 0.25) {
     if (muted || !audioCtx) return;
     if (audioCtx.state === 'suspended') { audioCtx.resume(); }
     const now = performance.now();
@@ -351,8 +351,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
     const g = audioCtx.createGain();
     o.frequency.value = freq;
     o.type = 'square';
-    g.gain.setValueAtTime(0.25, audioCtx.currentTime);
+    
+    // Set the volume dynamically based on the parameter passed in
+    g.gain.setValueAtTime(volume, audioCtx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    
     o.connect(g).connect(audioCtx.destination);
     o.start();
     o.stop(audioCtx.currentTime + dur);
@@ -371,17 +374,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
       alertMsg.textContent = 'BRAKE — OBSTACLE';
       alertSub.textContent = lead && isFinite(lead.ttc) ? 'IMPACT ~' + lead.ttc.toFixed(1) + 's' : '';
       edgeFlash.classList.add('on');
-      beep(1400, 0.15, 280);
+      // Pass 1.0 for MAX VOLUME on critical alerts
+      beep(1400, 0.15, 280, 1.0); 
     } else if (level === 'predict') {
       alertMsg.textContent = 'COLLISION PREDICTED';
       alertSub.textContent = lead && isFinite(lead.ttc) ? 'CLOSING · ~' + lead.ttc.toFixed(1) + 's AT CURRENT RATE' : '';
       edgeFlash.classList.remove('on');
-      beep(1100, 0.13, 550);
+      // Pass 0.6 for medium-high volume on predicted collisions
+      beep(1100, 0.13, 550, 0.6);
     } else {
       alertMsg.textContent = reason === 'cutin' ? 'CUT-IN AHEAD' : 'OBSTACLE AHEAD';
       alertSub.textContent = '';
       edgeFlash.classList.remove('on');
-      beep(880, 0.12, 950);
+      // Pass 0.25 for a quiet volume on basic cautions
+      beep(880, 0.12, 950, 0.25);
     }
   }
 
