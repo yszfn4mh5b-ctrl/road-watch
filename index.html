@@ -39,10 +39,11 @@
   #startBtn:disabled { background: #1b2a2e; color: var(--dim); }
   #loadStatus { font-size: 12px; color: var(--dim); text-align: center; min-height: 16px; }
 
-  /* ---------- HUD ---------- */
+  /* ---------- HUD Layout (With Landscape Safe Areas) ---------- */
   #hudTop { position: fixed; top: 0; left: 0; right: 0; z-index: 10;
     display: flex; justify-content: space-between; align-items: flex-start;
-    padding: max(10px, env(safe-area-inset-top)) 14px 0; pointer-events: none; }
+    padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); 
+    pointer-events: none; }
   .pill { background: rgba(5,7,10,0.72); border: 1px solid rgba(53,224,232,0.35);
     border-radius: 6px; padding: 5px 10px; font-size: 11px; letter-spacing: 0.08em; color: var(--hud-cyan); }
   #fpsPill { color: var(--dim); border-color: rgba(93,107,118,0.4); }
@@ -66,7 +67,7 @@
 
   #hudBottom { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
     display: flex; justify-content: space-between; align-items: flex-end;
-    padding: 0 14px max(12px, env(safe-area-inset-bottom)); }
+    padding: 0 max(14px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
   #distReadout { background: rgba(5,7,10,0.72); border: 1px solid rgba(53,224,232,0.35);
     border-radius: 8px; padding: 8px 14px; min-width: 130px; }
   #distReadout .lbl { font-size: 10px; letter-spacing: 0.14em; color: var(--dim); }
@@ -78,6 +79,13 @@
   #muteBtn { pointer-events: auto; background: rgba(5,7,10,0.72); color: var(--ink);
     border: 1px solid rgba(93,107,118,0.5); border-radius: 8px; padding: 10px 14px;
     font-family: inherit; font-size: 13px; }
+
+  /* Responsive tweaks for horizontal mounting */
+  @media (orientation: landscape) {
+    #alertBanner { top: 10%; }
+    #alertBanner .msg { font-size: 18px; padding: 6px 16px; }
+    #distReadout .val { font-size: 24px; }
+  }
 </style>
 </head>
 <body>
@@ -139,27 +147,35 @@ const RW_Logic = (() => {
   const MIN_CLOSING = 1.0;        // m/s — ignore noise below this
   const HIST_WINDOW = 1600;       // ms of history per track
   const TRACK_TIMEOUT = 700;      // ms unseen before a track dies
-  const MATCH_RADIUS = 0.12;      // frame-width fraction for frame-to-frame matching
   const CUTIN_HORIZON_S = 1.3;    // project lateral motion this far ahead
   const CUTIN_MAX_DIST = 28;      // only care about cut-ins closer than this
 
-  function pathBounds(yFrac) {
-    const halfBottom = 0.34, halfTop = 0.06;
+  function pathBounds(yFrac, aspect) {
+    let halfBottom = 0.34, halfTop = 0.06;
+    // Scale tracking lane width contextually if device is sideways
+    if (aspect > 1) {
+      halfBottom = 0.34 / aspect;
+      halfTop = 0.06 / aspect;
+    }
     const half = halfTop + (halfBottom - halfTop) * yFrac;
     return { left: 0.5 - half, right: 0.5 + half };
   }
 
-  function inPathXY(cxFrac, byFrac) {
+  function inPathXY(cxFrac, byFrac, aspect) {
     if (byFrac < HORIZON) return false;
     const yFrac = (byFrac - HORIZON) / (1 - HORIZON);
-    const b = pathBounds(yFrac);
+    const b = pathBounds(yFrac, aspect);
     return cxFrac > b.left && cxFrac < b.right;
   }
 
-  function estimateDistance(cls, boxWfrac) {
+  function estimateDistance(cls, boxWfrac, vw, vh) {
     const rw = REAL_WIDTH[cls];
     if (!rw || boxWfrac <= 0) return null;
-    return (rw * FOCAL_FACTOR) / boxWfrac; // boxW as fraction of frame width
+    // Normalize pixel scaling across portrait/landscape to keep depth readouts accurate
+    const pixelW = boxWfrac * vw;
+    const baselineWidth = Math.min(vw, vh);
+    const normalizedWFrac = pixelW / baselineWidth;
+    return (rw * FOCAL_FACTOR) / normalizedWFrac;
   }
 
   // Least-squares slope of y vs t(ms) → units per second
@@ -179,16 +195,19 @@ const RW_Logic = (() => {
 
   let nextId = 1;
   /* dets: [{cls, cxFrac, byFrac, wFrac}], tracks mutated in place */
-  function updateTracks(tracks, dets, now) {
+  function updateTracks(tracks, dets, now, vw, vh) {
     const used = new Set();
+    const aspect = vw / vh;
+    const matchRadius = aspect > 1 ? 0.12 / aspect : 0.12;
+
     for (const det of dets) {
-      let best = null, bestD = MATCH_RADIUS;
+      let best = null, bestD = matchRadius;
       for (const tr of tracks) {
         if (used.has(tr.id) || tr.cls !== det.cls) continue;
         const d = Math.hypot(tr.cx - det.cxFrac, tr.by - det.byFrac);
         if (d < bestD) { bestD = d; best = tr; }
       }
-      const dist = estimateDistance(det.cls, det.wFrac);
+      const dist = estimateDistance(det.cls, det.wFrac, vw, vh);
       if (best) {
         used.add(best.id);
         best.cx = det.cxFrac; best.by = det.byFrac; best.w = det.wFrac;
@@ -206,7 +225,7 @@ const RW_Logic = (() => {
     return tracks.filter(tr => now - tr.lastSeen < TRACK_TIMEOUT);
   }
 
-  function analyzeTrack(tr) {
+  function analyzeTrack(tr, aspect) {
     const hist = tr.hist;
     const n = hist.length;
     const smoothD = n ? hist.reduce((a, s) => a + s.d, 0) / n : null;
@@ -217,22 +236,22 @@ const RW_Logic = (() => {
       latVel = slopePerSec(hist, 'cx');            // frame-frac/s
       if (closing > MIN_CLOSING && smoothD !== null) ttc = smoothD / closing;
     }
-    const inP = inPathXY(tr.cx, tr.by);
+    const inP = inPathXY(tr.cx, tr.by, aspect);
     // Cut-in prediction: project lateral position forward
     let cutIn = false;
     if (!inP && smoothD !== null && smoothD < CUTIN_MAX_DIST && Math.abs(latVel) > 0.02) {
       const futureCx = tr.cx + latVel * CUTIN_HORIZON_S;
-      if (inPathXY(futureCx, tr.by)) cutIn = true;
+      if (inPathXY(futureCx, tr.by, aspect)) cutIn = true;
     }
     return { smoothD, closing, ttc, inP, cutIn, latVel };
   }
 
   /* Returns {level: none|caution|predict|critical, lead, reason} */
-  function assessThreat(tracks) {
+  function assessThreat(tracks, aspect) {
     let level = 'none', lead = null, reason = '';
     const rank = { none: 0, caution: 1, predict: 2, critical: 3 };
     for (const tr of tracks) {
-      const a = analyzeTrack(tr);
+      const a = analyzeTrack(tr, aspect);
       tr.analysis = a;
       if (a.smoothD === null) continue;
       let trLevel = 'none', trReason = '';
@@ -283,6 +302,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
   let audioCtx = null, lastBeep = 0;
   let frames = 0, lastFpsT = performance.now();
   let tracks = [];
+  let alertBuffer = null; 
 
   cocoSsd.load({ base: 'lite_mobilenet_v2' }).then(m => {
     model = m;
@@ -302,6 +322,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
       video.srcObject = stream;
       await video.play();
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      
+      window.fetch('tesla_autopilot_warn.mp3')
+        .then(response => response.arrayBuffer())
+        .then(arrayBuffer => audioCtx.decodeAudioData(arrayBuffer))
+        .then(decodedBuffer => {
+          alertBuffer = decodedBuffer;
+        })
+        .catch(err => console.error("Could not load tesla_autopilot_warn.mp3:", err));
+
       requestWakeLock();
       document.getElementById('startScreen').style.display = 'none';
       statusPill.textContent = 'ACTIVE';
@@ -341,24 +370,31 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
     return { scale, ox: (cw - vw * scale) / 2, oy: (ch - vh * scale) / 2 };
   }
 
-  function beep(freq, dur, gap, volume = 0.25) {
+  function beep(freq, dur, gap) {
     if (muted || !audioCtx) return;
     if (audioCtx.state === 'suspended') { audioCtx.resume(); }
     const now = performance.now();
     if (now - lastBeep < gap) return;
     lastBeep = now;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.frequency.value = freq;
-    o.type = 'square';
-    
-    // Set the volume dynamically based on the parameter passed in
-    g.gain.setValueAtTime(volume, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-    
-    o.connect(g).connect(audioCtx.destination);
-    o.start();
-    o.stop(audioCtx.currentTime + dur);
+
+    if (alertBuffer) {
+      const source = audioCtx.createBufferSource();
+      source.buffer = alertBuffer;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(1.0, audioCtx.currentTime); 
+      source.connect(g).connect(audioCtx.destination);
+      source.start(0);
+    } else {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.frequency.value = freq;
+      o.type = 'square';
+      g.gain.setValueAtTime(0.25, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start();
+      o.stop(audioCtx.currentTime + dur);
+    }
   }
 
   function setAlert(level, lead, reason) {
@@ -374,31 +410,29 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
       alertMsg.textContent = 'BRAKE — OBSTACLE';
       alertSub.textContent = lead && isFinite(lead.ttc) ? 'IMPACT ~' + lead.ttc.toFixed(1) + 's' : '';
       edgeFlash.classList.add('on');
-      // Pass 1.0 for MAX VOLUME on critical alerts
-      beep(1400, 0.15, 280, 1.0); 
+      beep(1400, 0.15, 280);
     } else if (level === 'predict') {
       alertMsg.textContent = 'COLLISION PREDICTED';
       alertSub.textContent = lead && isFinite(lead.ttc) ? 'CLOSING · ~' + lead.ttc.toFixed(1) + 's AT CURRENT RATE' : '';
       edgeFlash.classList.remove('on');
-      // Pass 0.6 for medium-high volume on predicted collisions
-      beep(1100, 0.13, 550, 0.6);
+      beep(1100, 0.13, 550);
     } else {
       alertMsg.textContent = reason === 'cutin' ? 'CUT-IN AHEAD' : 'OBSTACLE AHEAD';
       alertSub.textContent = '';
       edgeFlash.classList.remove('on');
-      // Pass 0.25 for a quiet volume on basic cautions
-      beep(880, 0.12, 950, 0.25);
+      beep(880, 0.12, 950);
     }
   }
 
   async function detectLoop() {
     if (!running) return;
-    // Guard: camera may not report dimensions for the first few frames
     if (!video.videoWidth || video.readyState < 2) {
       requestAnimationFrame(detectLoop);
       return;
     }
     const vw = video.videoWidth, vh = video.videoHeight;
+    const aspect = vw / vh;
+    
     let predictions = [];
     try { predictions = await model.detect(video, 12, 0.45); } catch (e) {}
 
@@ -411,8 +445,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
       dets.push({ cls: p.class, cxFrac: (x + w / 2) / vw, byFrac: (y + h) / vh,
                   wFrac: w / vw, bbox: p.bbox });
     }
-    tracks = L.updateTracks(tracks, dets, now);
-    const threat = L.assessThreat(tracks);
+    tracks = L.updateTracks(tracks, dets, now, vw, vh);
+    const threat = L.assessThreat(tracks, aspect);
 
     // ---- draw ----
     const m = mapper();
@@ -463,8 +497,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
   }
 
   function drawPath(m, vw, vh) {
+    const aspect = vw / vh;
     const horizonY = L.HORIZON * vh;
-    const top = L.pathBounds(0), bot = L.pathBounds(1);
+    const top = L.pathBounds(0, aspect), bot = L.pathBounds(1, aspect);
     ctx.beginPath();
     ctx.moveTo(m.ox + bot.left * vw * m.scale,  m.oy + vh * m.scale);
     ctx.lineTo(m.ox + top.left * vw * m.scale,  m.oy + horizonY * m.scale);
@@ -491,7 +526,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
     ctx.font = (12 * devicePixelRatio) + 'px ui-monospace, Menlo, monospace';
     const th = 18 * devicePixelRatio;
     const tw = ctx.measureText(label).width + 10 * devicePixelRatio;
-    // Clamp label inside the frame if the box touches the top edge
     const ly = cy - th < 0 ? cy + ch : cy - th;
     ctx.fillStyle = 'rgba(5,7,10,0.8)';
     ctx.fillRect(cx, ly, tw, th);
