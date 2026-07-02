@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>RoadWatch v2 — Predictive Collision Alert</title>
+<style>
+  :root {
+    --bg: #05070a;
+    --hud-cyan: #35e0e8;
+    --hud-amber: #ffb020;
+    --hud-red: #ff3b3b;
+    --hud-green: #47e07a;
+    --ink: #dfe8ee;
+    --dim: #5d6b76;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); overflow: hidden;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+
+  #stage { position: fixed; inset: 0; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ---------- Start / disclaimer screen ---------- */
+  #startScreen { position: fixed; inset: 0; background: var(--bg); z-index: 30;
+    display: flex; flex-direction: column; justify-content: center; padding: 28px; gap: 18px; }
+  #startScreen h1 { font-size: 26px; letter-spacing: 0.14em; color: var(--hud-cyan); font-weight: 600; }
+  #startScreen h1 span { color: var(--dim); font-weight: 400; }
+  .warnBox { border: 1px solid #3a2a10; background: #14100a; padding: 14px; border-radius: 8px;
+    font-size: 13px; line-height: 1.55; color: #e8c98a; }
+  .warnBox strong { color: var(--hud-amber); }
+  #startScreen p.sub { font-size: 13px; color: var(--dim); line-height: 1.5; }
+  #startBtn { margin-top: 6px; padding: 16px; font-size: 16px; letter-spacing: 0.08em;
+    background: var(--hud-cyan); color: #04252a; border: none; border-radius: 10px;
+    font-family: inherit; font-weight: 700; }
+  #startBtn:disabled { background: #1b2a2e; color: var(--dim); }
+  #loadStatus { font-size: 12px; color: var(--dim); text-align: center; min-height: 16px; }
+
+  /* ---------- HUD ---------- */
+  #hudTop { position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: max(10px, env(safe-area-inset-top)) 14px 0; pointer-events: none; }
+  .pill { background: rgba(5,7,10,0.72); border: 1px solid rgba(53,224,232,0.35);
+    border-radius: 6px; padding: 5px 10px; font-size: 11px; letter-spacing: 0.08em; color: var(--hud-cyan); }
+  #fpsPill { color: var(--dim); border-color: rgba(93,107,118,0.4); }
+
+  #alertBanner { position: fixed; left: 0; right: 0; top: 16%; z-index: 12; text-align: center;
+    pointer-events: none; display: none; }
+  #alertBanner .msg { display: inline-block; padding: 10px 22px; border-radius: 8px;
+    font-size: 21px; font-weight: 800; letter-spacing: 0.1em; }
+  #alertBanner .sub { display: block; margin-top: 6px; font-size: 13px; letter-spacing: 0.08em; }
+  #alertBanner.caution .msg { background: rgba(50,34,4,0.85); color: var(--hud-amber); border: 1px solid var(--hud-amber); }
+  #alertBanner.predict .msg { background: rgba(56,22,2,0.9); color: #ffd9a0; border: 2px solid #ff7a20; }
+  #alertBanner.predict .sub { color: #ff9a50; }
+  #alertBanner.critical .msg { background: rgba(58,6,6,0.92); color: #fff; border: 2px solid var(--hud-red);
+    animation: pulse 0.5s infinite alternate; }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.06); } }
+
+  #edgeFlash { position: fixed; inset: 0; z-index: 9; pointer-events: none; opacity: 0;
+    box-shadow: inset 0 0 90px 30px var(--hud-red); transition: opacity 0.15s; }
+  #edgeFlash.on { opacity: 1; animation: flash 0.5s infinite alternate; }
+  @keyframes flash { from { opacity: 0.35; } to { opacity: 1; } }
+
+  #hudBottom { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    padding: 0 14px max(12px, env(safe-area-inset-bottom)); }
+  #distReadout { background: rgba(5,7,10,0.72); border: 1px solid rgba(53,224,232,0.35);
+    border-radius: 8px; padding: 8px 14px; min-width: 130px; }
+  #distReadout .lbl { font-size: 10px; letter-spacing: 0.14em; color: var(--dim); }
+  #distReadout .val { font-size: 30px; font-weight: 700; color: var(--hud-green); line-height: 1.1; }
+  #distReadout .val.amber { color: var(--hud-amber); }
+  #distReadout .val.red { color: var(--hud-red); }
+  #distReadout .ttc { font-size: 11px; color: var(--dim); letter-spacing: 0.06em; min-height: 14px; }
+  #distReadout .ttc.hot { color: #ff9a50; }
+  #muteBtn { pointer-events: auto; background: rgba(5,7,10,0.72); color: var(--ink);
+    border: 1px solid rgba(93,107,118,0.5); border-radius: 8px; padding: 10px 14px;
+    font-family: inherit; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>ROADWATCH <span>/ v2 predictive</span></h1>
+  <div class="warnBox">
+    <strong>This is an experimental demo, not a safety device.</strong>
+    It cannot prevent a crash, may miss obstacles or give false alerts, and must never be
+    relied on while driving. Keep your eyes on the road at all times. Mount the phone where
+    it does not block your view, and comply with local hands-free laws.
+  </div>
+  <p class="sub">Rear camera + on-device neural net. Tracks each vehicle across frames,
+  measures closing speed, and predicts time-to-collision before you get close. Detects
+  cut-ins drifting into your lane. Nothing leaves your phone.</p>
+  <button id="startBtn" disabled>LOADING MODEL…</button>
+  <div id="loadStatus">Downloading detection model</div>
+</div>
+
+<div id="stage">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="edgeFlash"></div>
+<div id="alertBanner"><div class="msg" id="alertMsg"></div><div class="sub" id="alertSub"></div></div>
+
+<div id="hudTop">
+  <div class="pill" id="statusPill">STANDBY</div>
+  <div class="pill" id="fpsPill">-- FPS</div>
+</div>
+
+<div id="hudBottom">
+  <div id="distReadout">
+    <div class="lbl">LEAD OBSTACLE</div>
+    <div class="val" id="distVal">—</div>
+    <div class="ttc" id="ttcVal"></div>
+  </div>
+  <button id="muteBtn">🔊 SOUND ON</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+<script id="logic">
+/* ============ Pure logic: tracking, distance, TTC, threat model ============
+   Kept free of DOM so it can be unit-tested. */
+const RW_Logic = (() => {
+  const REAL_WIDTH = { car: 1.8, truck: 2.5, bus: 2.55, motorcycle: 0.8, bicycle: 0.6, person: 0.5 };
+  const TRACKED = new Set(Object.keys(REAL_WIDTH));
+  const SIGNS = new Set(['stop sign', 'traffic light']);
+  const FOCAL_FACTOR = 0.73;      // iPhone main cam ~69° horizontal FOV
+  const HORIZON = 0.55;           // fraction of frame height where path starts
+
+  const CAUTION_DIST = 30;        // m
+  const CRITICAL_DIST = 14;       // m
+  const CRITICAL_TTC = 2.2;       // s
+  const PREDICT_TTC = 4.5;        // s — early "collision predicted" tier
+  const MIN_CLOSING = 1.0;        // m/s — ignore noise below this
+  const HIST_WINDOW = 1600;       // ms of history per track
+  const TRACK_TIMEOUT = 700;      // ms unseen before a track dies
+  const MATCH_RADIUS = 0.12;      // frame-width fraction for frame-to-frame matching
+  const CUTIN_HORIZON_S = 1.3;    // project lateral motion this far ahead
+  const CUTIN_MAX_DIST = 28;      // only care about cut-ins closer than this
+
+  function pathBounds(yFrac) {
+    const halfBottom = 0.34, halfTop = 0.06;
+    const half = halfTop + (halfBottom - halfTop) * yFrac;
+    return { left: 0.5 - half, right: 0.5 + half };
+  }
+
+  function inPathXY(cxFrac, byFrac) {
+    if (byFrac < HORIZON) return false;
+    const yFrac = (byFrac - HORIZON) / (1 - HORIZON);
+    const b = pathBounds(yFrac);
+    return cxFrac > b.left && cxFrac < b.right;
+  }
+
+  function estimateDistance(cls, boxWfrac) {
+    const rw = REAL_WIDTH[cls];
+    if (!rw || boxWfrac <= 0) return null;
+    return (rw * FOCAL_FACTOR) / boxWfrac; // boxW as fraction of frame width
+  }
+
+  // Least-squares slope of y vs t(ms) → units per second
+  function slopePerSec(samples, key) {
+    const n = samples.length;
+    if (n < 4) return 0;
+    let st = 0, sy = 0, stt = 0, sty = 0;
+    const t0 = samples[0].t;
+    for (const s of samples) {
+      const t = (s.t - t0) / 1000;
+      st += t; sy += s[key]; stt += t * t; sty += t * s[key];
+    }
+    const denom = n * stt - st * st;
+    if (Math.abs(denom) < 1e-9) return 0;
+    return (n * sty - st * sy) / denom;
+  }
+
+  let nextId = 1;
+  /* dets: [{cls, cxFrac, byFrac, wFrac}], tracks mutated in place */
+  function updateTracks(tracks, dets, now) {
+    const used = new Set();
+    for (const det of dets) {
+      let best = null, bestD = MATCH_RADIUS;
+      for (const tr of tracks) {
+        if (used.has(tr.id) || tr.cls !== det.cls) continue;
+        const d = Math.hypot(tr.cx - det.cxFrac, tr.by - det.byFrac);
+        if (d < bestD) { bestD = d; best = tr; }
+      }
+      const dist = estimateDistance(det.cls, det.wFrac);
+      if (best) {
+        used.add(best.id);
+        best.cx = det.cxFrac; best.by = det.byFrac; best.w = det.wFrac;
+        best.lastSeen = now;
+        if (dist !== null) best.hist.push({ t: now, d: dist, cx: det.cxFrac });
+      } else {
+        const tr = { id: nextId++, cls: det.cls, cx: det.cxFrac, by: det.byFrac,
+                     w: det.wFrac, lastSeen: now, hist: [] };
+        if (dist !== null) tr.hist.push({ t: now, d: dist, cx: det.cxFrac });
+        tracks.push(tr);
+        used.add(tr.id);
+      }
+    }
+    for (const tr of tracks) tr.hist = tr.hist.filter(s => now - s.t < HIST_WINDOW);
+    return tracks.filter(tr => now - tr.lastSeen < TRACK_TIMEOUT);
+  }
+
+  function analyzeTrack(tr) {
+    const hist = tr.hist;
+    const n = hist.length;
+    const smoothD = n ? hist.reduce((a, s) => a + s.d, 0) / n : null;
+    const span = n >= 2 ? hist[n - 1].t - hist[0].t : 0;
+    let closing = 0, ttc = Infinity, latVel = 0;
+    if (n >= 4 && span >= 400) {
+      closing = -slopePerSec(hist, 'd');           // m/s toward us
+      latVel = slopePerSec(hist, 'cx');            // frame-frac/s
+      if (closing > MIN_CLOSING && smoothD !== null) ttc = smoothD / closing;
+    }
+    const inP = inPathXY(tr.cx, tr.by);
+    // Cut-in prediction: project lateral position forward
+    let cutIn = false;
+    if (!inP && smoothD !== null && smoothD < CUTIN_MAX_DIST && Math.abs(latVel) > 0.02) {
+      const futureCx = tr.cx + latVel * CUTIN_HORIZON_S;
+      if (inPathXY(futureCx, tr.by)) cutIn = true;
+    }
+    return { smoothD, closing, ttc, inP, cutIn, latVel };
+  }
+
+  /* Returns {level: none|caution|predict|critical, lead, reason} */
+  function assessThreat(tracks) {
+    let level = 'none', lead = null, reason = '';
+    const rank = { none: 0, caution: 1, predict: 2, critical: 3 };
+    for (const tr of tracks) {
+      const a = analyzeTrack(tr);
+      tr.analysis = a;
+      if (a.smoothD === null) continue;
+      let trLevel = 'none', trReason = '';
+      if (a.inP && (a.smoothD < CRITICAL_DIST || a.ttc < CRITICAL_TTC)) {
+        trLevel = 'critical'; trReason = a.ttc < CRITICAL_TTC ? 'ttc' : 'dist';
+      } else if (a.inP && a.ttc < PREDICT_TTC) {
+        trLevel = 'predict'; trReason = 'ttc';
+      } else if (a.inP && a.smoothD < CAUTION_DIST) {
+        trLevel = 'caution'; trReason = 'dist';
+      } else if (a.cutIn) {
+        trLevel = 'caution'; trReason = 'cutin';
+      }
+      const isLeadCandidate = a.inP || a.cutIn;
+      if (isLeadCandidate && (!lead || a.smoothD < lead.smoothD)) {
+        lead = { smoothD: a.smoothD, ttc: a.ttc, cls: tr.cls };
+      }
+      if (rank[trLevel] > rank[level]) { level = trLevel; reason = trReason; }
+    }
+    return { level, lead, reason };
+  }
+
+  return { REAL_WIDTH, TRACKED, SIGNS, HORIZON, pathBounds, inPathXY,
+           estimateDistance, slopePerSec, updateTracks, analyzeTrack, assessThreat,
+           CAUTION_DIST, CRITICAL_DIST, PREDICT_TTC };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = RW_Logic;
+</script>
+
+<script>
+(() => {
+  const L = RW_Logic;
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const startBtn = document.getElementById('startBtn');
+  const loadStatus = document.getElementById('loadStatus');
+  const statusPill = document.getElementById('statusPill');
+  const fpsPill = document.getElementById('fpsPill');
+  const distVal = document.getElementById('distVal');
+  const ttcVal = document.getElementById('ttcVal');
+  const alertBanner = document.getElementById('alertBanner');
+  const alertMsg = document.getElementById('alertMsg');
+  const alertSub = document.getElementById('alertSub');
+  const edgeFlash = document.getElementById('edgeFlash');
+  const muteBtn = document.getElementById('muteBtn');
+
+  let model = null, running = false, muted = false;
+  let audioCtx = null, lastBeep = 0;
+  let frames = 0, lastFpsT = performance.now();
+  let tracks = [];
+
+  cocoSsd.load({ base: 'lite_mobilenet_v2' }).then(m => {
+    model = m;
+    startBtn.disabled = false;
+    startBtn.textContent = 'START CAMERA';
+    loadStatus.textContent = 'Model ready — runs entirely on this phone';
+  }).catch(() => {
+    loadStatus.textContent = 'Model failed to load. Check connection and reload.';
+  });
+
+  startBtn.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      requestWakeLock();
+      document.getElementById('startScreen').style.display = 'none';
+      statusPill.textContent = 'ACTIVE';
+      running = true;
+      sizeCanvas();
+      detectLoop();
+    } catch (e) {
+      loadStatus.textContent = 'Camera blocked. Allow camera access in Settings › Safari and reload.';
+    }
+  });
+
+  muteBtn.addEventListener('click', () => {
+    muted = !muted;
+    muteBtn.textContent = muted ? '🔇 MUTED' : '🔊 SOUND ON';
+  });
+
+  async function requestWakeLock() {
+    try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && running) {
+      requestWakeLock();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    }
+  });
+  window.addEventListener('resize', sizeCanvas);
+
+  function sizeCanvas() {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+  }
+
+  function mapper() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = canvas.width, ch = canvas.height;
+    const scale = Math.max(cw / vw, ch / vh);
+    return { scale, ox: (cw - vw * scale) / 2, oy: (ch - vh * scale) / 2 };
+  }
+
+  function beep(freq, dur, gap) {
+    if (muted || !audioCtx) return;
+    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+    const now = performance.now();
+    if (now - lastBeep < gap) return;
+    lastBeep = now;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.frequency.value = freq;
+    o.type = 'square';
+    g.gain.setValueAtTime(0.25, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g).connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + dur);
+  }
+
+  function setAlert(level, lead, reason) {
+    alertBanner.className = '';
+    if (level === 'none') {
+      alertBanner.style.display = 'none';
+      edgeFlash.classList.remove('on');
+      return;
+    }
+    alertBanner.style.display = 'block';
+    alertBanner.className = level;
+    if (level === 'critical') {
+      alertMsg.textContent = 'BRAKE — OBSTACLE';
+      alertSub.textContent = lead && isFinite(lead.ttc) ? 'IMPACT ~' + lead.ttc.toFixed(1) + 's' : '';
+      edgeFlash.classList.add('on');
+      beep(1400, 0.15, 280);
+    } else if (level === 'predict') {
+      alertMsg.textContent = 'COLLISION PREDICTED';
+      alertSub.textContent = lead && isFinite(lead.ttc) ? 'CLOSING · ~' + lead.ttc.toFixed(1) + 's AT CURRENT RATE' : '';
+      edgeFlash.classList.remove('on');
+      beep(1100, 0.13, 550);
+    } else {
+      alertMsg.textContent = reason === 'cutin' ? 'CUT-IN AHEAD' : 'OBSTACLE AHEAD';
+      alertSub.textContent = '';
+      edgeFlash.classList.remove('on');
+      beep(880, 0.12, 950);
+    }
+  }
+
+  async function detectLoop() {
+    if (!running) return;
+    // Guard: camera may not report dimensions for the first few frames
+    if (!video.videoWidth || video.readyState < 2) {
+      requestAnimationFrame(detectLoop);
+      return;
+    }
+    const vw = video.videoWidth, vh = video.videoHeight;
+    let predictions = [];
+    try { predictions = await model.detect(video, 12, 0.45); } catch (e) {}
+
+    const now = performance.now();
+    const dets = [], signs = [];
+    for (const p of predictions) {
+      if (L.SIGNS.has(p.class)) { signs.push(p); continue; }
+      if (!L.TRACKED.has(p.class)) continue;
+      const [x, y, w, h] = p.bbox;
+      dets.push({ cls: p.class, cxFrac: (x + w / 2) / vw, byFrac: (y + h) / vh,
+                  wFrac: w / vw, bbox: p.bbox });
+    }
+    tracks = L.updateTracks(tracks, dets, now);
+    const threat = L.assessThreat(tracks);
+
+    // ---- draw ----
+    const m = mapper();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawPath(m, vw, vh);
+    for (const s of signs) drawBox(m, s.bbox, s.class.toUpperCase(), 'rgba(53,224,232,0.9)', false);
+    for (const det of dets) {
+      const tr = tracks.find(t => t.cx === det.cxFrac && t.by === det.byFrac && t.cls === det.cls);
+      const a = tr && tr.analysis;
+      let color = 'rgba(71,224,122,0.9)', hot = false;
+      let label = det.cls.toUpperCase();
+      if (a && a.smoothD !== null) label += ' · ' + a.smoothD.toFixed(0) + 'm';
+      if (a) {
+        if (a.inP && (a.smoothD < L.CRITICAL_DIST || a.ttc < 2.2)) { color = 'rgba(255,59,59,0.95)'; hot = true; }
+        else if (a.inP && a.ttc < L.PREDICT_TTC) { color = 'rgba(255,122,32,0.95)'; hot = true; label += ' · ' + a.ttc.toFixed(1) + 's'; }
+        else if (a.inP && a.smoothD < L.CAUTION_DIST) color = 'rgba(255,176,32,0.95)';
+        else if (a.inP) color = 'rgba(255,176,32,0.7)';
+        else if (a.cutIn) { color = 'rgba(255,176,32,0.95)'; label += ' · CUT-IN'; }
+      }
+      drawBox(m, det.bbox, label, color, hot);
+    }
+
+    // ---- HUD ----
+    setAlert(threat.level, threat.lead, threat.reason);
+    if (threat.lead) {
+      distVal.textContent = threat.lead.smoothD.toFixed(0) + ' m';
+      distVal.className = threat.level === 'critical' ? 'val red'
+        : (threat.level === 'none' ? 'val' : 'val amber');
+      if (isFinite(threat.lead.ttc)) {
+        ttcVal.textContent = 'TTC ' + threat.lead.ttc.toFixed(1) + 's';
+        ttcVal.className = threat.lead.ttc < L.PREDICT_TTC ? 'ttc hot' : 'ttc';
+      } else {
+        ttcVal.textContent = 'NOT CLOSING';
+        ttcVal.className = 'ttc';
+      }
+    } else {
+      distVal.textContent = '—';
+      distVal.className = 'val';
+      ttcVal.textContent = '';
+    }
+
+    frames++;
+    if (now - lastFpsT > 1000) {
+      fpsPill.textContent = frames + ' FPS';
+      frames = 0; lastFpsT = now;
+    }
+    requestAnimationFrame(detectLoop);
+  }
+
+  function drawPath(m, vw, vh) {
+    const horizonY = L.HORIZON * vh;
+    const top = L.pathBounds(0), bot = L.pathBounds(1);
+    ctx.beginPath();
+    ctx.moveTo(m.ox + bot.left * vw * m.scale,  m.oy + vh * m.scale);
+    ctx.lineTo(m.ox + top.left * vw * m.scale,  m.oy + horizonY * m.scale);
+    ctx.lineTo(m.ox + top.right * vw * m.scale, m.oy + horizonY * m.scale);
+    ctx.lineTo(m.ox + bot.right * vw * m.scale, m.oy + vh * m.scale);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(53,224,232,0.07)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(53,224,232,0.55)';
+    ctx.lineWidth = 2 * devicePixelRatio;
+    ctx.setLineDash([12 * devicePixelRatio, 10 * devicePixelRatio]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function drawBox(m, bbox, label, color, hot) {
+    const [x, y, w, h] = bbox;
+    const cx = m.ox + x * m.scale, cy = m.oy + y * m.scale;
+    const cw = w * m.scale, ch = h * m.scale;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = (hot ? 3 : 2) * devicePixelRatio;
+    ctx.strokeRect(cx, cy, cw, ch);
+
+    ctx.font = (12 * devicePixelRatio) + 'px ui-monospace, Menlo, monospace';
+    const th = 18 * devicePixelRatio;
+    const tw = ctx.measureText(label).width + 10 * devicePixelRatio;
+    // Clamp label inside the frame if the box touches the top edge
+    const ly = cy - th < 0 ? cy + ch : cy - th;
+    ctx.fillStyle = 'rgba(5,7,10,0.8)';
+    ctx.fillRect(cx, ly, tw, th);
+    ctx.fillStyle = color;
+    ctx.fillText(label, cx + 5 * devicePixelRatio, ly + th - 5 * devicePixelRatio);
+  }
+})();
+</script>
+</body>
+</html>
